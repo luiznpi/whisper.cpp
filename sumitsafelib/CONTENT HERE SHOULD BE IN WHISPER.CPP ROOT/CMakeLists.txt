@@ -1,13 +1,13 @@
+#cmake -B build -DGGML_CUDA=1
+#cmake clean && GGML_CUDA=1 make -j command
 cmake_minimum_required(VERSION 3.5) # for add_link_options and implicit target directories.
 project("whisper.cpp" C CXX)
-project("whisper.cpp" VERSION 1.7.4)
+project("whisper.cpp" VERSION 1.7.2)
 include(CheckIncludeFileCXX)
 
 set(SOVERSION 1)
 
-#set(CMAKE_WARN_DEPRECATED YES)
 set(CMAKE_WARN_UNUSED_CLI YES)
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if (NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
@@ -36,8 +36,6 @@ if (EMSCRIPTEN)
 
     option(WHISPER_WASM_SINGLE_FILE "whisper: embed WASM inside the generated whisper.js" ON)
 
-    # TODO: without these, we get the following error:
-    #       wasm-ld: error: --shared-memory is disallowed by whisper.cpp.o because it was not compiled with 'atomics' or 'bulk-memory' features.
     set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -pthread -s TOTAL_STACK=5242880")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -s TOTAL_STACK=5242880")
 else()
@@ -62,8 +60,7 @@ option(WHISPER_ALL_WARNINGS           "whisper: enable all compiler warnings"   
 option(WHISPER_ALL_WARNINGS_3RD_PARTY "whisper: enable all compiler warnings in 3rd party libs" OFF)
 
 # build
-option(WHISPER_FATAL_WARNINGS  "whisper: enable -Werror flag"               OFF)
-option(WHISPER_USE_SYSTEM_GGML "whisper: use system-installed GGML library" OFF)
+option(WHISPER_FATAL_WARNINGS "whisper: enable -Werror flag" OFF)
 
 # sanitizers
 option(WHISPER_SANITIZE_THREAD    "whisper: enable thread sanitizer"    OFF)
@@ -78,8 +75,6 @@ option(WHISPER_BUILD_SERVER   "whisper: build server example" ${WHISPER_STANDALO
 # 3rd party libs
 option(WHISPER_CURL "whisper: use libcurl to download model from an URL" OFF)
 option(WHISPER_SDL2 "whisper: support for libSDL2" OFF)
-
-
 
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     option(WHISPER_FFMPEG "whisper: support building and linking with ffmpeg libs (avcodec, swresample, ...)" OFF)
@@ -124,20 +119,19 @@ whisper_option_depr(WARNING     WHISPER_SYCL_F16            GGML_SYCL_F16)
 #
 
 if (NOT TARGET ggml)
-    if (WHISPER_USE_SYSTEM_GGML)
-        find_package(ggml REQUIRED)
-        if (NOT ggml_FOUND)
-            message(FATAL_ERROR "System-installed GGML library not found.")
-        endif()
-        add_library(ggml ALIAS ggml::ggml)
-    else()
-        add_subdirectory(ggml)
-    endif()
+    add_subdirectory(ggml)
     # ... otherwise assume ggml is added by a parent CMakeLists.txt
 endif()
 add_subdirectory(src)
 
+# Add sumitsafelib library
 add_subdirectory(sumitsafelib)
+
+# Add optional example or test executable for sumitsafelib
+# if (WHISPER_BUILD_EXAMPLES)
+#     add_executable(test_sumitsafelib examples/test_sumitsafelib.cpp)
+#     target_link_libraries(test_sumitsafelib PRIVATE sumitsafelib whisper)
+# endif()
 
 #
 # install
