@@ -1,0 +1,9 @@
+LIBRARY sumitsafelib
+EXPORTS
+    whisper_service_create
+    whisper_service_destroy
+    whisper_service_initialize
+    whisper_service_process_audio_chunk
+    whisper_service_process_audio_stream
+    whisper_service_stop
+    whisper_service_set_callback

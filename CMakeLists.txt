@@ -4,6 +4,8 @@ project("whisper.cpp" VERSION 1.7.4)
 include(CheckIncludeFileCXX)
 
 set(SOVERSION 1)
+# Enable automatic symbol export for all functions (Windows only)
+
 
 #set(CMAKE_WARN_DEPRECATED YES)
 set(CMAKE_WARN_UNUSED_CLI YES)
@@ -142,11 +144,52 @@ if (NOT TARGET ggml)
 endif()
 add_subdirectory(src)
 
-add_subdirectory(sumitsafelib)
 
-#
-# install
-#
+#----------------------------------------------------------sumitsafe add on
+# For the sumitsafe target
+add_library(sumitsafe SHARED 
+    sumitsafelib/src/sumitsafelib.cpp
+    sumitsafelib/include/sumitsafelib.h
+)
+
+# Force the exact output name you want
+set_target_properties(sumitsafe PROPERTIES
+    OUTPUT_NAME "sumitsafe"  # This ensures base name is correct
+    SUFFIX ".dll"           # Explicitly sets extension on Windows
+)
+
+# Include paths
+target_include_directories(sumitsafe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/sumitsafelib/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# Export definitions
+target_compile_definitions(sumitsafe PRIVATE 
+    $<$<BOOL:${BUILD_SHARED_LIBS}>:SUMITSAFE_EXPORTS>
+)
+
+# Visibility settings
+if(NOT WIN32)
+    set_target_properties(sumitsafe PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+    )
+endif()
+
+# Link dependencies - MUST use sumitsafe here, not sumitsafelib
+target_link_libraries(sumitsafe PRIVATE whisper ggml)
+
+# Public include directories - for consumers of your library
+target_include_directories(sumitsafe PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/sumitsafelib/include>
+    $<INSTALL_INTERFACE:include>
+)
+##---------------------------------------------------------------------------
+
+
+
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)

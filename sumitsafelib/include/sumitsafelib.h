@@ -1,8 +1,19 @@
 #ifndef WHISPER_SERVICE_H
 #define WHISPER_SERVICE_H
 
-#include <stdint.h>  // For fixed-width integer types
-#include <stdbool.h> // For boolean types
+#ifdef _WIN32
+#ifdef SUMITSAFE_EXPORTS
+#define WHISPER_API __declspec(dllexport)
+#else
+#define WHISPER_API __declspec(dllimport)
+#endif
+#else
+#define WHISPER_API __attribute__((visibility("default")))
+#endif
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <chrono>
 
 #ifdef __cplusplus
 extern "C"
@@ -32,6 +43,7 @@ extern "C"
         bool no_timestamps; // Omit timestamps
         bool use_gpu;       // Use GPU
         bool flash_attn;    // Enable Flash Attention
+        bool verbose;       // enable debug prints
 
         const char *language; // Language code (e.g., "en")
         const char *model;    // Path to the model file
@@ -41,29 +53,41 @@ extern "C"
     typedef void (*TranscriptionCallbackC)(const char *transcription);
 
     // Function to create a new WhisperService instance
-    WhisperServiceHandle whisper_service_create(const WhisperParams *params);
+    WHISPER_API WhisperServiceHandle whisper_service_create(const WhisperParams *params);
 
     // Function to destroy the WhisperService instance
-    void whisper_service_destroy(WhisperServiceHandle handle);
+    WHISPER_API void whisper_service_destroy(WhisperServiceHandle handle);
 
     // Function to initialize the WhisperService
     // Returns 1 on success, 0 on failure
-    int whisper_service_initialize(WhisperServiceHandle handle);
+    WHISPER_API int whisper_service_initialize(WhisperServiceHandle handle);
 
     // Function to process an audio chunk
     // audio_data: Pointer to float array containing audio samples
     // length: Number of samples in the audio_data array
-    void whisper_service_process_audio_chunk(WhisperServiceHandle handle, const float *audio_data, int length);
+    WHISPER_API void whisper_service_process_audio_chunk(WhisperServiceHandle handle, const float *audio_data, int length);
 
+    // length: Number of samples in the audio_data array
+    WHISPER_API void whisper_service_process_audio_stream(WhisperServiceHandle handle, const float *audio_data, int length, bool flushCmd, int minSilentSpeakingMs, int maxSilenceMs);
+
+    // Function to process an audio chunk
+    // audio_data: Pointer to float array containing audio samples
     // Function to stop the transcription service
-    void whisper_service_stop(WhisperServiceHandle handle);
+    WHISPER_API void whisper_service_stop(WhisperServiceHandle handle);
 
     // Function to set the transcription callback
     // The callback should be a function that takes a const char* (transcription result)
-    void whisper_service_set_callback(WhisperServiceHandle handle, TranscriptionCallbackC callback);
+    WHISPER_API void whisper_service_set_callback(WhisperServiceHandle handle, TranscriptionCallbackC callback);
 
 #ifdef __cplusplus
 }
+#endif
+#ifdef __cplusplus
+// Include C++ headers first
+#include <vector>
+#include <string>
+#include <functional>
+
 #endif
 
 #ifdef __cplusplus
@@ -73,7 +97,17 @@ extern "C"
 #include <functional>
 
 // C++ class declaration remains private and is not exposed via FFI
-class WhisperService
+void high_pass_filter(std::vector<float> &data, float cutoff, float sample_rate);
+bool vad_deepseek(const std::vector<float> &pcmf32, int sample_rate, int last_ms,
+                  float vad_thold, float freq_thold, bool verbose);
+
+// Class declaration (export only if building the library)
+#ifdef SUMITSAFE_EXPORTS
+#define WHISPER_CPP_API WHISPER_API
+#else
+#define WHISPER_CPP_API
+#endif
+class WHISPER_CPP_API WhisperService
 {
 public:
     // Constructor and Destructor
@@ -86,6 +120,9 @@ public:
     // Process an audio chunk
     void processAudioChunk(const std::vector<float> &audio_data);
 
+    // Process an audio stream
+    void processAudioStream(const std::vector<float> &audio_data, const bool flushCmd, const int minSilenceSpeakingMs, const int maxSilenceMs);
+
     // Stop the transcription service
     void stop();
 
@@ -95,8 +132,13 @@ public:
 private:
     struct whisper_context *ctx;
     WhisperParams params;
-    std::vector<float> pcmf32_old;                     // Buffer for retaining previous audio
+    std::vector<float> pcmf32_old;   // Buffer for retaining previous audio
+    std::vector<float> pcmf32_voice; // Accumulates voice activity
+    std::vector<float> pcmf32_new;   // Accumulates voice activity
+
+    bool is_speaking = false;
     std::function<void(const std::string &)> callback; // User-defined callback for results
+    std::chrono::time_point<std::chrono::high_resolution_clock> last_voice_time;
 };
 
 #endif // __cplusplus
