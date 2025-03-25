@@ -132,9 +132,9 @@ public:
 private:
     struct whisper_context *ctx;
     WhisperParams params;
-    std::vector<float> pcmf32_old;   // Buffer for retaining previous audio
-    std::vector<float> pcmf32_voice; // Accumulates voice activity
-    std::vector<float> pcmf32_new;   // Accumulates voice activity
+    std::vector<float> pcmf32_old;                 // Buffer for retaining previous audio
+    std::vector<float> pcmf32_audio_mem;           // Buffer for retaining previous audio to detect levels
+    std::vector<float> pcmf32_audio_to_transcribe; // Buffer to accumulate audio to be transcribed
 
     bool is_speaking = false;
     std::function<void(const std::string &)> callback; // User-defined callback for results

@@ -78,13 +78,13 @@ bool vad_deepseek(const std::vector<float> &pcmf32, int sample_rate, int last_ms
     energy_last = sqrtf(energy_last / n_samples_last);
 
     // Detect speech using relative threshold and absolute minimum
-    bool is_silent = energy_last < fmaxf(energy_all, noise_floor) / vad_thold;
+    bool is_silent = energy_last < fmaxf(energy_all, fmaxf(noise_floor, 0.1)) / vad_thold;
     if (is_silent)
     {
         // Update noise floor during silence
         noise_floor = alpha * energy_all + (1 - alpha) * noise_floor;
-        noise_floor = fmaxf(noise_floor, 0.1);
-        fprintf(stderr, " noise floor: %f\n", noise_floor);
+        if (verbose)
+            fprintf(stderr, " noise floor (min at 0.1): %f\n", noise_floor);
     }
     if (verbose)
     {
@@ -113,6 +113,10 @@ bool WhisperService::initialize()
     whisper_context_params cparams = whisper_context_default_params();
     cparams.use_gpu = params.use_gpu;
     cparams.flash_attn = params.flash_attn;
+
+    pcmf32_audio_to_transcribe.clear();
+    pcmf32_old.clear();
+    pcmf32_audio_mem.clear();
 
     ctx = whisper_init_from_file_with_params(params.model, cparams);
     if (!ctx)
@@ -189,43 +193,46 @@ void WhisperService::processAudioChunk(const std::vector<float> &audio_data)
 
 void WhisperService::processAudioStream(const std::vector<float> &audio_data, bool flushCmd, const int minSilenceSpeakingMs, const int maxSilenceMs)
 {
+
     if (!ctx)
     {
         throw std::runtime_error("Whisper context not initialized!");
     }
 
+    // keep 30 seconds of the previous audio for frequency and noise detection
+    const int N_SAMPLES_KEEP_AUDIO_LEVELS = WHISPER_SAMPLE_RATE * 30;
+    // Audio buffer management for whisper processing
+    const int n_samples_keep = (params.keep_ms * WHISPER_SAMPLE_RATE) / 1000;
+
     const int MAX_TALKING_MS = 600000; // 10 minutes without transcription, force transcription
-    const size_t max_buffer_samples = (MAX_TALKING_MS * WHISPER_SAMPLE_RATE) / 1000;
+    const size_t max_transcription_samples = (MAX_TALKING_MS * WHISPER_SAMPLE_RATE) / 1000;
 
     const auto maxSilenceChrono = std::chrono::milliseconds(maxSilenceMs);
 
-    // Audio buffer management
-    const int n_samples_keep = (params.keep_ms * WHISPER_SAMPLE_RATE) / 1000;
-
-    // Merge context from previous iteration
-    std::vector<float> pcmf32_context;
-    if (!pcmf32_old.empty())
+    // Append new audio data to pcmf32_audio_mem
+    pcmf32_audio_mem.insert(pcmf32_audio_mem.end(), audio_data.begin(), audio_data.end());
+    // Trim excess samples (keep only the last N_SAMPLES_KEEP_AUDIO_LEVELS)
+    if (pcmf32_audio_mem.size() > N_SAMPLES_KEEP_AUDIO_LEVELS)
     {
-        const int n_samples_take = std::min(static_cast<int>(pcmf32_old.size()), n_samples_keep);
-        pcmf32_context.insert(pcmf32_context.end(),
-                              pcmf32_old.end() - n_samples_take,
-                              pcmf32_old.end());
+        pcmf32_audio_mem.erase(
+            pcmf32_audio_mem.begin(),
+            pcmf32_audio_mem.begin() + (pcmf32_audio_mem.size() - N_SAMPLES_KEEP_AUDIO_LEVELS));
     }
 
-    // Add new audio data to voice buffer
-    pcmf32_voice.insert(pcmf32_voice.end(), audio_data.begin(), audio_data.end());
+    // Add new audio data to be processed by whisper
+    pcmf32_audio_to_transcribe.insert(pcmf32_audio_to_transcribe.end(), audio_data.begin(), audio_data.end());
 
     // Analyze the accumulated voice buffer + new audio
     const int vad_window_ms = minSilenceSpeakingMs; // Optimal for voice detection
-    const auto &analysis_buffer = pcmf32_voice;     // Use accumulated buffer
+                                                    // Use accumulated buffer
 
     bool silence_detected = vad_deepseek(
-        analysis_buffer,
+        pcmf32_audio_mem,
         WHISPER_SAMPLE_RATE,
         vad_window_ms,
-        params.vad_thold,  // Recommended: 1.5-2.0
-        params.freq_thold, // Recommended: 50.0-100.0
-        params.verbose);   // debug
+        params.vad_thold,      // Recommended: 1.5-2.0
+        params.freq_thold,     // Recommended: 50.0-100.0
+        params.print_special); // debug
 
     // State tracking with hysteresis
     const auto now = std::chrono::steady_clock::now();
@@ -244,30 +251,23 @@ void WhisperService::processAudioStream(const std::vector<float> &audio_data, bo
     else // eliminate silence from transcription
         if (silence_duration > maxSilenceChrono)
         {
-            if (params.verbose)
+            if (params.print_special)
                 fprintf(stderr, "Cleaned up silent buffer\n");
 
             last_voice_time = now;
-            // Clean up buffers
-            pcmf32_old = pcmf32_voice;
-            pcmf32_voice.clear();
 
             const size_t min_silence_samples = (minSilenceSpeakingMs * WHISPER_SAMPLE_RATE) / 1000;
             // Keep only the context portion
-            if (pcmf32_old.size() > min_silence_samples)
+            if (pcmf32_audio_to_transcribe.size() > min_silence_samples)
             {
-                pcmf32_old.erase(pcmf32_old.begin(), pcmf32_old.end() - min_silence_samples);
+                pcmf32_audio_to_transcribe.erase(pcmf32_audio_to_transcribe.begin(), pcmf32_audio_to_transcribe.end() - min_silence_samples);
             }
         }
 
-    bool forceTranscription = pcmf32_voice.size() > max_buffer_samples;
+    bool forceTranscription = pcmf32_audio_to_transcribe.size() > max_transcription_samples;
     // Process audio when flush is requested or buffer is full
     if (flushCmd || forceTranscription)
     {
-        // Combine context and voice data
-        std::vector<float> pcmf32(pcmf32_context);
-        pcmf32.insert(pcmf32.end(), pcmf32_voice.begin(), pcmf32_voice.end());
-
         // Prepare Whisper parameters
         whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
         wparams.language = params.language;
@@ -278,8 +278,9 @@ void WhisperService::processAudioStream(const std::vector<float> &audio_data, bo
         wparams.no_context = true;
         // wparams.suppress_non_speech_tokens = true;
 
+        std::vector<float> whisperVector = pcmf32_audio_to_transcribe;
         // Run transcription
-        if (whisper_full(ctx, wparams, pcmf32.data(), pcmf32.size()) != 0)
+        if (whisper_full(ctx, wparams, whisperVector.data(), whisperVector.size()) != 0)
         {
             throw std::runtime_error("Whisper transcription failed!");
         }
@@ -294,33 +295,22 @@ void WhisperService::processAudioStream(const std::vector<float> &audio_data, bo
                 result += text;
         }
 
-        // Clean up buffers
-        pcmf32_old = pcmf32_voice;
-        pcmf32_voice.clear();
         is_speaking = false;
 
+        // Clean up buffers
         int n_samples_to_actually_keep = n_samples_keep;
         if (forceTranscription)
             n_samples_to_actually_keep = fmaxf(WHISPER_SAMPLE_RATE * 2, n_samples_keep); // keep at least 2 seconds overlap
         // Keep only the context portion
-        if (pcmf32_old.size() > n_samples_keep)
+        if (pcmf32_audio_to_transcribe.size() > n_samples_to_actually_keep)
         {
-            pcmf32_old.erase(pcmf32_old.begin(), pcmf32_old.end() - n_samples_keep);
+            pcmf32_audio_to_transcribe.erase(pcmf32_audio_to_transcribe.begin(), pcmf32_audio_to_transcribe.end() - n_samples_to_actually_keep);
         }
 
         // Call callback with final phrase
         if (callback && !result.empty())
         {
             callback(result);
-        }
-    }
-    else
-    {
-        // Retain context for next iteration
-        pcmf32_old = pcmf32_voice;
-        if (pcmf32_old.size() > n_samples_keep)
-        {
-            pcmf32_old.erase(pcmf32_old.begin(), pcmf32_old.end() - n_samples_keep);
         }
     }
 }
